@@ -13,8 +13,10 @@ from scanner import scan, validate_symbol
 from tv_store import init_tv_tables, recent_signals
 from market_intelligence import build_market_intelligence, normalize_symbol
 from intelligence_store import init_intelligence_tables, recent_intelligence, save_intelligence
+from automation_engine import RiskPolicy, position_plan, load_state, save_state, log_event
+from exchange_connectors import connection_status
 
-st.set_page_config(page_title="Crypto Hunters 5.3", page_icon="🥊", layout="wide")
+st.set_page_config(page_title="Crypto Hunters 6.0", page_icon="🥊", layout="wide")
 st.markdown("""
 <style>
 .hunter-action-card {
@@ -148,10 +150,10 @@ def render_live_trade_panel() -> None:
         st.caption(f"Last successful market check: approximately {age} seconds ago.")
 
 
-st.title("🥊 Crypto Hunters 5.3")
+st.title("🥊 Crypto Hunters 6.0")
 st.caption("TradingView signals plus behind-the-chart market pressure intelligence")
 
-scanner_tab, intelligence_tab, tv_tab, coach_tab = st.tabs(["🔎 Hunter Scanner", "🧠 Market Intelligence", "📡 TradingView Signals", "🎧 Persistent Trade Coach"])
+scanner_tab, intelligence_tab, tv_tab, coach_tab, auto_tab = st.tabs(["🔎 Hunter Scanner", "🧠 Market Intelligence", "📡 TradingView Signals", "🎧 Persistent Trade Coach", "🤖 Safe Automation"])
 
 with scanner_tab:
     c1, c2, c3, c4 = st.columns(4)
@@ -483,3 +485,69 @@ with coach_tab:
         "A KCEX-listed coin that is unavailable on Bitget will be rejected with a clear message. "
         "Off-page Telegram or SMS monitoring still depends on the server remaining awake."
     )
+
+
+with auto_tab:
+    st.subheader("Safe Automation — paper first, live later")
+    st.caption("This module separates Hunter decisions, risk approval, and exchange execution. Version 6.0 cannot transmit live orders; it is deliberately paper-only until the strategy proves an edge.")
+
+    state = load_state()
+    saved_policy = state.get("policy", {})
+    venue = st.selectbox("Planned execution venue", ["Coinbase Advanced", "Kraken Spot"], help="Coinbase is the first-choice U.S. venue for this build. Kraken Spot is the backup.")
+    status = connection_status(venue)
+    if status.configured:
+        st.success(f"API configuration detected for {status.venue}. {status.message}")
+    else:
+        st.info(status.message)
+
+    c1, c2, c3, c4 = st.columns(4)
+    capital = c1.number_input("Trading capital", min_value=1.0, value=float(saved_policy.get("starting_capital", 15.0)), step=1.0)
+    risk_pct = c2.number_input("Risk per trade %", min_value=0.1, max_value=5.0, value=float(saved_policy.get("risk_per_trade_pct", 1.0)), step=0.1)
+    max_position_pct = c3.number_input("Maximum position %", min_value=1.0, max_value=100.0, value=float(saved_policy.get("max_position_pct", 20.0)), step=1.0)
+    daily_loss_pct = c4.number_input("Daily loss limit %", min_value=0.5, max_value=10.0, value=float(saved_policy.get("max_daily_loss_pct", 3.0)), step=0.5)
+
+    d1, d2, d3, d4 = st.columns(4)
+    max_trades = d1.number_input("Maximum trades/day", min_value=1, max_value=20, value=int(saved_policy.get("max_trades_per_day", 3)), step=1)
+    min_score = d2.number_input("Minimum Hunter score", min_value=60, max_value=100, value=int(saved_policy.get("min_hunter_score", 78)), step=1)
+    d3.metric("Leverage", "1×", help="Growth mode is intentionally spot-only and unleveraged in version 6.0.")
+    kill_switch = d4.toggle("Kill switch", value=bool(state.get("kill_switch", True)), help="ON blocks every future order path.")
+
+    policy = RiskPolicy(
+        mode="PAPER", starting_capital=float(capital), risk_per_trade_pct=float(risk_pct),
+        max_position_pct=float(max_position_pct), max_daily_loss_pct=float(daily_loss_pct),
+        max_trades_per_day=int(max_trades), min_hunter_score=int(min_score), leverage=1.0,
+    )
+    errors = policy.validate()
+    if errors:
+        st.error("\n".join(errors))
+    if st.button("Save automation safety rules", type="primary", use_container_width=True, disabled=bool(errors)):
+        state["policy"] = policy.__dict__
+        state["kill_switch"] = bool(kill_switch)
+        state["venue"] = venue
+        save_state(state)
+        log_event("SETTINGS", "Automation safety rules updated.", policy.__dict__)
+        st.success("Safety rules saved. Paper mode remains active and live execution remains locked.")
+
+    st.markdown("### Position-size preview")
+    p1, p2 = st.columns(2)
+    preview_entry = p1.number_input("Example entry price", min_value=0.00000001, value=1.0, format="%.8f")
+    preview_stop = p2.number_input("Example stop distance %", min_value=0.1, max_value=20.0, value=1.0, step=0.1)
+    plan = position_plan(policy, float(preview_entry), float(preview_stop))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Dollars at risk", f"${plan['risk_dollars']:.2f}")
+    m2.metric("Maximum notional", f"${plan['notional']:.2f}")
+    m3.metric("Estimated quantity", f"{plan['quantity']:.8g}")
+    m4.metric("Daily stop", f"${plan['daily_loss_limit_dollars']:.2f}")
+
+    st.markdown("### Mandatory path before live automation")
+    st.write("1. Run paper automation and collect at least 100 completed trades.")
+    st.write("2. Require positive results after fees and slippage, with an acceptable maximum drawdown.")
+    st.write("3. Start live with spot only, one position at a time, no leverage, and withdrawal-disabled API permissions.")
+    st.write("4. Keep the kill switch on until a separate live-enablement review is completed.")
+
+    with st.expander("API security requirements", expanded=True):
+        st.write("• Never enter an exchange password, 2FA code, seed phrase, or API secret into chat.")
+        st.write("• Store keys only in deployment secrets or environment variables.")
+        st.write("• Enable balance/order permissions only; disable withdrawals.")
+        st.write("• Restrict the API key to the server IP when the exchange supports it.")
+        st.write("• Use a dedicated sub-portfolio or small balance for the first live test.")
