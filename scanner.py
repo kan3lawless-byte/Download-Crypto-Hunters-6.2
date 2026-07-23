@@ -19,6 +19,16 @@ def get_json(url,params=None):
  if isinstance(p,dict) and p.get('code') not in (None,'00000'): raise RuntimeError(p.get('msg','API error'))
  return p
 
+def normalize_symbol(symbol: str) -> str:
+ raw = str(symbol or '').upper().strip()
+ for token in ('/', '-', '_', ' ', ':'):
+  raw = raw.replace(token, '')
+ for suffix in ('PERPETUAL', 'PERP'):
+  if raw.endswith(suffix): raw = raw[:-len(suffix)]
+ if raw.endswith('USDTUSDT'): raw = raw[:-4]
+ if not raw.endswith('USDT'): raw += 'USDT'
+ return raw
+
 def ema(x,n): return x.ewm(span=n,adjust=False,min_periods=n).mean()
 def rsi(x,n=14):
  d=x.diff(); g=d.clip(lower=0); l=-d.clip(upper=0)
@@ -44,8 +54,21 @@ class Bitget:
     out.append({'symbol':symbol,'volume24h_usdt':vol,'change24h_pct':float(t.get('change24h') or 0)*100})
   return sorted(out,key=lambda x:x['volume24h_usdt'],reverse=True)[:MAX_MARKETS]
  def candles(self,symbol,granularity):
+  symbol = normalize_symbol(symbol)
   p=get_json('https://api.bitget.com/api/v2/mix/market/candles',{'symbol':symbol,'productType':PRODUCT_TYPE,'granularity':granularity,'limit':CANDLE_LIMIT,'kLineType':'MARKET'})
-  return normalize(p.get('data',[]))
+  rows = p.get('data',[])
+  if not rows:
+   raise RuntimeError(f'{symbol} was not found on Bitget USDT perpetuals or returned no candle data')
+  return normalize(rows)
+ def ticker(self, symbol):
+  symbol = normalize_symbol(symbol)
+  p=get_json('https://api.bitget.com/api/v2/mix/market/ticker',{'symbol':symbol,'productType':PRODUCT_TYPE})
+  data = p.get('data') or []
+  item = data[0] if isinstance(data, list) and data else data if isinstance(data, dict) else {}
+  price = float(item.get('lastPr') or item.get('last') or item.get('close') or 0)
+  if price <= 0:
+   raise RuntimeError(f'{symbol} was not found on Bitget USDT perpetuals')
+  return price
 
 @dataclass
 class F:
@@ -101,8 +124,18 @@ def scan(ema_fast=9, ema_mid=21, ema_slow=50, sync_window=3):
   except Exception as e: print('Skipped',m['symbol'],e)
  return pd.DataFrame(rows).sort_values(['score','volume24h_usdt'],ascending=[False,False]).reset_index(drop=True) if rows else pd.DataFrame()
 
+def validate_symbol(symbol: str) -> dict[str, Any]:
+ normalized = normalize_symbol(symbol)
+ ex = Bitget()
+ price = ex.ticker(normalized)
+ # Confirm candle history too, because the coach requires it.
+ candles = ex.candles(normalized, '1m')
+ if len(candles) < 70:
+  raise RuntimeError(f'{normalized} exists on Bitget, but does not have enough candle history for Hunter')
+ return {'symbol': normalized, 'price': price, 'source': ex.name, 'status': 'LIVE'}
+
 def analyze_symbol(symbol,side,entry_price=None,ema_fast=9,ema_mid=21,ema_slow=50,sync_window=3):
- side=side.upper(); symbol=symbol.upper().replace('/','').replace('-',''); symbol += '' if symbol.endswith('USDT') else 'USDT'; ex=Bitget()
+ side=side.upper(); symbol=normalize_symbol(symbol); ex=Bitget()
  ff={k:feat(ex.candles(symbol,v),live=(k=='1m'),ema_fast=ema_fast,ema_mid=ema_mid,ema_slow=ema_slow) for k,v in COACH_TF.items()}
  if any(v is None for v in ff.values()):raise RuntimeError('Not enough candle data')
  a,w1=score_stage(ff['4h'],side,'4h'); b,w2=score_stage(ff['1h'],side,'1h'); c,w3=score_stage(ff['15m'],side,'15m'); d,w4=score_stage(ff['5m'],side,'5m'); total=round(a+b+c+d,1)
@@ -119,7 +152,7 @@ def analyze_symbol(symbol,side,entry_price=None,ema_fast=9,ema_mid=21,ema_slow=5
  if pnl is not None:notes.append(f'Move from your entry: {pnl:+.2f}% before leverage and fees.')
  bull_score = round((25 if ff['15m'].bull else 0) + (20 if ff['15m'].macd>ff['15m'].signal else 0) + (15 if ff['15m'].hist>ff['15m'].prev_hist else 0) + (15 if ff['15m'].rsi>=50 else 0) + (25 if ff['5m'].bull else 0), 1)
  bear_score = round((25 if ff['15m'].bear else 0) + (20 if ff['15m'].macd<ff['15m'].signal else 0) + (15 if ff['15m'].hist<ff['15m'].prev_hist else 0) + (15 if ff['15m'].rsi<=50 else 0) + (25 if ff['5m'].bear else 0), 1)
- return {'symbol':symbol,'side':side,'price':price,'scanner_score':total,'micro_score':mscore,'bull_score':bull_score,'bear_score':bear_score,'ema_settings':{'fast':ema_fast,'mid':ema_mid,'slow':ema_slow},'sync_window':sync_window,'action':action,'risk':risk,'headline':head,'commentary':notes,'stop_reference':price-sign*dist,'target1':price+sign*dist,'target2':price+sign*dist*1.75,'pnl_pct':pnl,'rsi':{k:ff[k].rsi for k in ('4h','1h','15m','5m','1m')},'warnings':w1+w2+w3+w4}
+ return {'symbol':symbol,'side':side,'price':price,'data_source':ex.name,'connection_status':'LIVE','scanner_score':total,'micro_score':mscore,'bull_score':bull_score,'bear_score':bear_score,'ema_settings':{'fast':ema_fast,'mid':ema_mid,'slow':ema_slow},'sync_window':sync_window,'action':action,'risk':risk,'headline':head,'commentary':notes,'stop_reference':price-sign*dist,'target1':price+sign*dist,'target2':price+sign*dist*1.75,'pnl_pct':pnl,'rsi':{k:ff[k].rsi for k in ('4h','1h','15m','5m','1m')},'warnings':w1+w2+w3+w4}
 
 
 def send_twilio_sms(text: str) -> None:

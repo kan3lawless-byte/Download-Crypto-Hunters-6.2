@@ -9,12 +9,29 @@ import streamlit as st
 
 from monitor import monitor_once, run_forever
 from persistence import clear_trade, get_trade, init_db, save_trade, set_active, recent_trade_history
-from scanner import scan
+from scanner import scan, validate_symbol
 from tv_store import init_tv_tables, recent_signals
 from market_intelligence import build_market_intelligence, normalize_symbol
 from intelligence_store import init_intelligence_tables, recent_intelligence, save_intelligence
 
-st.set_page_config(page_title="Crypto Hunters 5.2", page_icon="🥊", layout="wide")
+st.set_page_config(page_title="Crypto Hunters 5.3", page_icon="🥊", layout="wide")
+st.markdown("""
+<style>
+.hunter-action-card {
+  border: 1px solid rgba(128,128,128,.35);
+  border-radius: .65rem;
+  padding: .65rem .8rem;
+  min-height: 5.2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.hunter-action-label {font-size:.9rem; opacity:.78; margin-bottom:.25rem;}
+.hunter-action-value {font-size:1.55rem; line-height:1.12; font-weight:600; overflow-wrap:anywhere;}
+.hunter-live {color:#35d07f; font-weight:600;}
+.hunter-error {color:#ff6b6b; font-weight:600;}
+</style>
+""", unsafe_allow_html=True)
 init_db()
 init_tv_tables()
 init_intelligence_tables()
@@ -57,17 +74,27 @@ def render_live_trade_panel() -> None:
         except Exception:
             report = {}
 
-    st.caption(
-        f"Fresh Bitget check every 15 seconds • "
-        f"Background monitor: {'Running' if _monitor_thread.is_alive() else 'Stopped'}"
+    source = report.get("data_source", "Bitget USDT Perpetual") if report else "Bitget USDT Perpetual"
+    connection = report.get("connection_status", "WAITING") if report else "WAITING"
+    status_class = "hunter-live" if connection == "LIVE" else "hunter-error"
+    st.markdown(
+        f'<span class="{status_class}">● {connection}</span> — Market-data source: {source} • '
+        f'Background monitor: {"Running" if _monitor_thread.is_alive() else "Stopped"}',
+        unsafe_allow_html=True,
     )
 
     last_price = float((saved or {}).get("last_price") or 0)
-    m1, m2, m3, m4 = st.columns(4)
+    action_text = (saved or {}).get("last_action") or "WAITING"
+    m1, m2, m3, m4 = st.columns([1, 1, 1, 1.25])
     m1.metric("Last price", f"{last_price:.8g}" if last_price else "Waiting...")
-    m2.metric("Move from entry", f"{float(report.get('position_pnl_pct', 0)):+.2f}%")
+    m2.metric("Trade move", f"{float(report.get('position_pnl_pct', 0)):+.2f}%")
     m3.metric("Best move", f"{float((saved or {}).get('peak_pnl_pct') or 0):+.2f}%")
-    m4.metric("Last action", (saved or {}).get("last_action") or "Waiting for first check")
+    with m4:
+        st.markdown(
+            f'<div class="hunter-action-card"><div class="hunter-action-label">Action</div>'
+            f'<div class="hunter-action-value">{action_text}</div></div>',
+            unsafe_allow_html=True,
+        )
 
     if not report:
         st.warning(
@@ -80,7 +107,7 @@ def render_live_trade_panel() -> None:
     action = report.get("position_action") or (saved or {}).get("last_action") or "MONITOR"
     reason = report.get("position_reason") or report.get("headline") or ""
 
-    if str(action).startswith(("EXIT", "TAKE PROFIT")):
+    if str(action) in {"STOP EXIT", "TARGET HIT", "TRAILING EXIT", "REVERSAL EXIT"}:
         st.error(f"**{action}**")
     elif str(action).startswith("PROTECT"):
         st.warning(f"**{action}**")
@@ -98,6 +125,17 @@ def render_live_trade_panel() -> None:
     for line in lines:
         st.write(f"• {line}")
 
+    current_move = float(report.get("position_pnl_pct", 0))
+    peak_move = float(report.get("peak_pnl_pct", 0))
+    target_pct = float((saved or {}).get("take_profit_pct") or 0)
+    activation_pct = float((saved or {}).get("trailing_activation_pct") or 0)
+    giveback = float(report.get("drawdown_from_peak_pct", 0))
+    st.markdown("#### Exit-rule status")
+    r1, r2, r3 = st.columns(3)
+    r1.write(f"**Target:** {'Reached' if current_move >= target_pct else 'Not reached'} ({target_pct:.2f}%)")
+    r2.write(f"**Trailing:** {'Active' if peak_move >= activation_pct else 'Not active'} ({activation_pct:.2f}%)")
+    r3.write(f"**Giveback from peak:** {giveback:.2f}%")
+
     raw_comments = report.get("commentary") or []
     if raw_comments:
         with st.expander("Indicator details", expanded=False):
@@ -110,7 +148,7 @@ def render_live_trade_panel() -> None:
         st.caption(f"Last successful market check: approximately {age} seconds ago.")
 
 
-st.title("🥊 Crypto Hunters 5.2")
+st.title("🥊 Crypto Hunters 5.3")
 st.caption("TradingView signals plus behind-the-chart market pressure intelligence")
 
 scanner_tab, intelligence_tab, tv_tab, coach_tab = st.tabs(["🔎 Hunter Scanner", "🧠 Market Intelligence", "📡 TradingView Signals", "🎧 Persistent Trade Coach"])
@@ -298,7 +336,7 @@ with coach_tab:
 
     with st.form("trade_form"):
         a, b, c = st.columns(3)
-        symbol = a.text_input("Contract", value=str(defaults["symbol"])).upper().replace("/", "")
+        symbol = a.text_input("Contract", value=str(defaults["symbol"]), help="You may enter DEXEUSDT, DEXE/USDT, DEXE-USDT, or DEXE_USDT.")
         side = b.selectbox(
             "Direction",
             ["LONG", "SHORT"],
@@ -357,7 +395,7 @@ with coach_tab:
         sms = k.checkbox("SMS text", value=bool(defaults["sms_enabled"]))
 
         save = st.form_submit_button(
-            "Save and start monitoring",
+            "Update trade settings" if saved else "Save and start monitoring",
             type="primary",
             use_container_width=True,
         )
@@ -366,9 +404,27 @@ with coach_tab:
         if entry <= 0:
             st.error("Enter your actual trade-entry price.")
         else:
+            try:
+                symbol_check = validate_symbol(symbol)
+                normalized_symbol = symbol_check["symbol"]
+                live_price = float(symbol_check["price"])
+                entry_gap_pct = abs(entry / live_price - 1) * 100
+                if entry_gap_pct > 25:
+                    st.error(
+                        f"Entry price {entry:.8g} is {entry_gap_pct:.2f}% away from the live "
+                        f"{normalized_symbol} price of {live_price:.8g}. Check the KCEX contract and entry price before monitoring."
+                    )
+                    st.stop()
+            except Exception as exc:
+                st.error(
+                    f"No live Bitget data was found for this contract: {exc}. "
+                    "The coin may exist on KCEX but not on Bitget, which is Crypto Hunters' current market-data source."
+                )
+                st.stop()
+
             save_trade(
                 {
-                    "symbol": symbol,
+                    "symbol": normalized_symbol,
                     "side": side,
                     "entry_price": entry,
                     "stop_loss_pct": stop,
@@ -389,7 +445,7 @@ with coach_tab:
                 monitor_once()
             except Exception as exc:
                 st.warning(f"Trade was saved, but the first live check failed: {exc}")
-            st.success("Trade saved. Live monitoring is active.")
+            st.success(f"{normalized_symbol} matched successfully. Live Bitget monitoring is active.")
             st.rerun()
 
     if saved:
@@ -423,6 +479,7 @@ with coach_tab:
             st.dataframe(history_frame[trail_visible].tail(30).sort_values("time", ascending=False), use_container_width=True, hide_index=True)
 
     st.warning(
-        "The page now requests fresh Bitget data every 15 seconds while it is open. "
+        "Crypto Hunters can monitor only contracts available from its current Bitget USDT-perpetual data source. "
+        "A KCEX-listed coin that is unavailable on Bitget will be rejected with a clear message. "
         "Off-page Telegram or SMS monitoring still depends on the server remaining awake."
     )

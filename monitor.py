@@ -20,23 +20,23 @@ def decide(report: dict[str, Any], trade: dict[str, Any], pnl: float, peak: floa
     giveback = max(0.0, peak - pnl)
 
     if pnl <= -stop:
-        return "EXIT — STOP LOSS", f"Move from entry is {pnl:+.2f}%, crossing the {stop:.2f}% stop."
+        return "STOP EXIT", f"Move from entry is {pnl:+.2f}%, crossing the {stop:.2f}% stop."
     if pnl >= target:
-        return "TAKE PROFIT", f"Move from entry reached {pnl:+.2f}%, meeting the {target:.2f}% target."
+        return "TARGET HIT", f"Move from entry reached {pnl:+.2f}%, meeting the {target:.2f}% target."
     if peak >= activation and giveback >= trail:
-        return "TAKE PROFIT — TRAILING EXIT", (
+        return "TRAILING EXIT", (
             f"Best move was {peak:+.2f}%; current move is {pnl:+.2f}%, "
             f"a {giveback:.2f}% giveback."
         )
     if report["action"] in {"EXIT / DO NOT ENTER","AVOID"}:
-        return "EXIT — REVERSAL WARNING", report["headline"]
+        return "REVERSAL EXIT", report["headline"]
     if peak >= activation and report["micro_score"] < 50:
-        return "PROTECT PROFIT / TIGHTEN STOP", (
+        return "PROTECT PROFIT", (
             f"Best move is {peak:+.2f}%, but 1M trigger weakened to {report['micro_score']:.0f}/100."
         )
     if pnl > 0:
-        return "HOLD — PROFIT ACTIVE", f"Move from entry is {pnl:+.2f}%; no exit rule has fired."
-    return "HOLD / MONITOR", f"Move from entry is {pnl:+.2f}%; position remains inside the risk plan."
+        return "HOLD PROFIT", f"Move from entry is {pnl:+.2f}%; no exit rule has fired."
+    return "MONITOR", f"Move from entry is {pnl:+.2f}%; position remains inside the risk plan."
 
 def message(report, action, reason, pnl, peak):
     return (
@@ -74,7 +74,7 @@ def monitor_once() -> float:
 
         now = time.time()
         changed = action != (trade.get("last_action") or "")
-        urgent = action.startswith(("EXIT","TAKE PROFIT","PROTECT PROFIT"))
+        urgent = action in {"STOP EXIT", "TARGET HIT", "TRAILING EXIT", "REVERSAL EXIT", "PROTECT PROFIT"}
         heartbeat_due = (
             int(trade["status_update_minutes"]) > 0 and
             now - float(trade.get("last_status_at") or 0) >= int(trade["status_update_minutes"]) * 60

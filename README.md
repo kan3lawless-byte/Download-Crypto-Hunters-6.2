@@ -91,3 +91,13 @@ This module does not promise direction. Visible orders can be canceled, funding 
 - Manually entered USDT contracts use the same grading model and are remembered after saving.
 - The live Trade Coach records a 15-second history trail with price, P/L, scanner score, micro score, bullish pressure, bearish pressure, action, and reason.
 - Existing market-intelligence and TradingView webhook features remain included.
+
+## Version 5.3 interface and symbol-safety update
+
+- Normalizes KCEX-style entries such as `DEXE/USDT`, `DEXE-USDT`, and `DEXE_USDT` to the Bitget contract format.
+- Tests that a symbol exists on Bitget and has enough candle history before monitoring starts.
+- Shows the current market-data source and a visible LIVE/WAITING connection status.
+- Blocks obviously mismatched entry prices when they are more than 25% from the live contract price.
+- Uses compact action labels so critical messages fit: STOP EXIT, TARGET HIT, TRAILING EXIT, REVERSAL EXIT, PROTECT PROFIT, HOLD PROFIT, and MONITOR.
+- Keeps prices and percentages large while allowing the action message to wrap without ellipses.
+- Shows take-profit, trailing activation, and giveback status separately.
