@@ -119,7 +119,19 @@ def scan(ema_fast=9, ema_mid=21, ema_slow=50, sync_window=3):
     a,w1=score_stage(ff['4h'],side,'4h'); b,w2=score_stage(ff['1h'],side,'1h'); c,w3=score_stage(ff['15m'],side,'15m'); d,w4=score_stage(ff['5m'],side,'5m'); total=round(a+b+c+d,1); w=w1+w2+w3+w4
     sync_bonus = 5 if ((side=='LONG' and ff['15m'].macd>ff['15m'].signal and ff['15m'].rsi>=50) or (side=='SHORT' and ff['15m'].macd<ff['15m'].signal and ff['15m'].rsi<=50)) else 0
     total=min(100, round(total+sync_bonus,1))
-    rows.append({'symbol':m['symbol'],'side':side,'score':total,'grade':'A+' if total>=90 else 'A' if total>=82 else 'B' if total>=74 else 'C' if total>=65 else 'D','status':status(total,a,b,c,d,w),'price':ff['5m'].price,'trend_4h':a,'confirm_1h':b,'setup_15m':c,'entry_5m':d,'rsi_15m':ff['15m'].rsi,'rsi_5m':ff['5m'].rsi,'extension_5m_pct':ff['5m'].extension,'volume24h_usdt':m['volume24h_usdt'],'change24h_pct':m['change24h_pct'],'ema_alignment': 'BULL' if ff['15m'].bull else 'BEAR' if ff['15m'].bear else 'MIXED', 'rsi_macd_sync': bool(sync_bonus), 'warnings':'; '.join(w)})
+    atr_5m_pct = (ff['5m'].atr / ff['5m'].price * 100) if ff['5m'].price else 0.0
+    extension_penalty = min(18.0, ff['5m'].extension * 3.0)
+    conflict_penalty = 12.0 if a < 15 or b < 14 else 0.0
+    continuation_confidence = max(0.0, min(99.0, total - extension_penalty - conflict_penalty))
+    projected_move_low = max(0.15, atr_5m_pct * 0.75)
+    projected_move_high = max(projected_move_low, atr_5m_pct * 1.75)
+    prediction = (
+     'HIGH-CONVICTION' if continuation_confidence >= 86 and total >= 84 and not w else
+     'FAVORABLE' if continuation_confidence >= 76 and total >= 78 else
+     'DEVELOPING' if continuation_confidence >= 66 else
+     'NO TRADE'
+    )
+    rows.append({'symbol':m['symbol'],'side':side,'score':total,'grade':'A+' if total>=90 else 'A' if total>=82 else 'B' if total>=74 else 'C' if total>=65 else 'D','status':status(total,a,b,c,d,w),'price':ff['5m'].price,'trend_4h':a,'confirm_1h':b,'setup_15m':c,'entry_5m':d,'rsi_15m':ff['15m'].rsi,'rsi_5m':ff['5m'].rsi,'extension_5m_pct':ff['5m'].extension,'atr_5m_pct':atr_5m_pct,'continuation_confidence':round(continuation_confidence,1),'projected_move_low_pct':round(projected_move_low,2),'projected_move_high_pct':round(projected_move_high,2),'prediction':prediction,'volume24h_usdt':m['volume24h_usdt'],'change24h_pct':m['change24h_pct'],'ema_alignment': 'BULL' if ff['15m'].bull else 'BEAR' if ff['15m'].bear else 'MIXED', 'rsi_macd_sync': bool(sync_bonus), 'warnings':'; '.join(w)})
    time.sleep(.06)
   except Exception as e: print('Skipped',m['symbol'],e)
  return pd.DataFrame(rows).sort_values(['score','volume24h_usdt'],ascending=[False,False]).reset_index(drop=True) if rows else pd.DataFrame()

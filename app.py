@@ -16,7 +16,7 @@ from intelligence_store import init_intelligence_tables, recent_intelligence, sa
 from automation_engine import RiskPolicy, position_plan, load_state, save_state, log_event
 from exchange_connectors import connection_status
 
-st.set_page_config(page_title="Crypto Hunters 6.0", page_icon="🥊", layout="wide")
+st.set_page_config(page_title="Crypto Hunters 6.1", page_icon="🥊", layout="wide")
 st.markdown("""
 <style>
 .hunter-action-card {
@@ -150,10 +150,10 @@ def render_live_trade_panel() -> None:
         st.caption(f"Last successful market check: approximately {age} seconds ago.")
 
 
-st.title("🥊 Crypto Hunters 6.0")
+st.title("🥊 Crypto Hunters 6.1")
 st.caption("TradingView signals plus behind-the-chart market pressure intelligence")
 
-scanner_tab, intelligence_tab, tv_tab, coach_tab, auto_tab = st.tabs(["🔎 Hunter Scanner", "🧠 Market Intelligence", "📡 TradingView Signals", "🎧 Persistent Trade Coach", "🤖 Safe Automation"])
+scanner_tab, predictor_tab, intelligence_tab, tv_tab, coach_tab, auto_tab = st.tabs(["🔎 Hunter Scanner", "🔮 Profit Predictor", "🧠 Market Intelligence", "📡 TradingView Signals", "🎧 Persistent Trade Coach", "🤖 Safe Automation"])
 
 with scanner_tab:
     c1, c2, c3, c4 = st.columns(4)
@@ -210,6 +210,77 @@ with scanner_tab:
                     "sync_window": int(scan_sync_window),
                 }
                 st.success(f"{picked['symbol']} {picked['side']} is ready in the Trade Coach tab. Enter your actual entry price and start monitoring.")
+
+with predictor_tab:
+    st.subheader("Profit Predictor — best setup or no trade")
+    st.caption("Ranks continuation setups using 4H/1H/15M/5M alignment, RSI/MACD agreement, extension risk, liquidity, and recent volatility. It estimates probability-like confidence; it cannot guarantee a green result.")
+
+    p1, p2, p3, p4 = st.columns(4)
+    pred_min_conf = p1.slider("Minimum confidence", 60, 95, 80)
+    pred_min_score = p2.slider("Minimum Hunter score", 60, 100, 82)
+    pred_direction = p3.selectbox("Prediction direction", ["Both", "LONG", "SHORT"], key="predictor_direction")
+    pred_run = p4.button("Find best setup", type="primary", use_container_width=True)
+
+    st.markdown("##### Profit-protection filters")
+    q1, q2, q3 = st.columns(3)
+    max_extension = q1.number_input("Maximum 5M extension %", min_value=0.5, max_value=10.0, value=2.5, step=0.1)
+    require_sync = q2.toggle("Require RSI/MACD agreement", value=True)
+    require_ready = q3.toggle("Require READY status", value=True)
+
+    if pred_run:
+        with st.spinner("Searching for the strongest continuation setup..."):
+            try:
+                st.session_state.predictor_results = scan(9, 21, 50, 3)
+            except Exception as exc:
+                st.error(f"Prediction scan failed: {exc}")
+
+    pred_frame = st.session_state.get("predictor_results", pd.DataFrame())
+    if pred_frame.empty:
+        st.info("Select **Find best setup**. Hunter will either identify one qualified setup or tell you not to trade.")
+    else:
+        candidates = pred_frame.copy()
+        candidates = candidates[candidates["score"] >= pred_min_score]
+        candidates = candidates[candidates["continuation_confidence"] >= pred_min_conf]
+        candidates = candidates[candidates["extension_5m_pct"] <= float(max_extension)]
+        if pred_direction != "Both":
+            candidates = candidates[candidates["side"] == pred_direction]
+        if require_sync:
+            candidates = candidates[candidates["rsi_macd_sync"] == True]
+        if require_ready:
+            candidates = candidates[candidates["status"].str.startswith("READY")]
+        candidates = candidates.sort_values(["continuation_confidence", "score", "volume24h_usdt"], ascending=[False, False, False])
+
+        if candidates.empty:
+            st.error("NO TRADE — no market currently passes all profit-protection filters. Waiting is a valid trading decision.")
+        else:
+            best = candidates.iloc[0]
+            side_icon = "🟢" if best["side"] == "LONG" else "🔴"
+            st.success(f"{side_icon} BEST CURRENT SETUP: {best['symbol']} {best['side']}")
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Continuation confidence", f"{best['continuation_confidence']:.0f}/100")
+            a2.metric("Hunter score", f"{best['score']:.0f}/100")
+            a3.metric("Estimated move zone", f"{best['projected_move_low_pct']:.2f}%–{best['projected_move_high_pct']:.2f}%")
+            a4.metric("5M extension", f"{best['extension_5m_pct']:.2f}%")
+
+            st.markdown("##### Clear decision")
+            if best["prediction"] == "HIGH-CONVICTION":
+                st.info("**ENTER ONLY AFTER YOUR CHART CONFIRMS THE CLOSED CANDLE.** Use a predefined stop and take partial profit rather than waiting for an unlimited move.")
+            else:
+                st.warning("**WATCH / WAIT FOR CONFIRMATION.** The setup is favorable but not strong enough to treat as a high-conviction entry.")
+
+            st.write(f"• Direction: **{best['side']}**")
+            st.write(f"• EMA alignment: **{best['ema_alignment']}**")
+            st.write(f"• RSI/MACD agreement: **{'Yes' if best['rsi_macd_sync'] else 'No'}**")
+            st.write(f"• 4H + 1H quality: **{best['trend_4h'] + best['confirm_1h']:.0f}/50**")
+            st.write(f"• 15M + 5M entry quality: **{best['setup_15m'] + best['entry_5m']:.0f}/50**")
+            if best.get("warnings"):
+                st.warning(f"Warning: {best['warnings']}")
+
+            st.markdown("##### Other qualified setups")
+            show_cols = ["symbol", "side", "prediction", "continuation_confidence", "score", "projected_move_low_pct", "projected_move_high_pct", "extension_5m_pct", "status"]
+            st.dataframe(candidates.head(10)[show_cols], use_container_width=True, hide_index=True)
+
+            st.caption("Estimated move zones are ATR-based ranges, not promises. Fees, slippage, reversals, and news can turn any setup red.")
 
 with intelligence_tab:
     st.subheader("Behind-the-Chart Market Intelligence")
@@ -489,7 +560,7 @@ with coach_tab:
 
 with auto_tab:
     st.subheader("Safe Automation — paper first, live later")
-    st.caption("This module separates Hunter decisions, risk approval, and exchange execution. Version 6.0 cannot transmit live orders; it is deliberately paper-only until the strategy proves an edge.")
+    st.caption("This module separates Hunter decisions, risk approval, and exchange execution. Version 6.1 cannot transmit live orders; it is deliberately paper-only until the strategy proves an edge.")
 
     state = load_state()
     saved_policy = state.get("policy", {})
@@ -509,7 +580,7 @@ with auto_tab:
     d1, d2, d3, d4 = st.columns(4)
     max_trades = d1.number_input("Maximum trades/day", min_value=1, max_value=20, value=int(saved_policy.get("max_trades_per_day", 3)), step=1)
     min_score = d2.number_input("Minimum Hunter score", min_value=60, max_value=100, value=int(saved_policy.get("min_hunter_score", 78)), step=1)
-    d3.metric("Leverage", "1×", help="Growth mode is intentionally spot-only and unleveraged in version 6.0.")
+    d3.metric("Leverage", "1×", help="Growth mode is intentionally spot-only and unleveraged in version 6.1.")
     kill_switch = d4.toggle("Kill switch", value=bool(state.get("kill_switch", True)), help="ON blocks every future order path.")
 
     policy = RiskPolicy(
